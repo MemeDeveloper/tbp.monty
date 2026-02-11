@@ -1218,7 +1218,8 @@ class EvidenceGraphLM(GraphLM):
                     "channel_hypothesis_displacer_telemetry"
                 ]
                 channel_prediction_error = displacer_telemetry["mlh_prediction_error"]
-                prediction_errors.append(channel_prediction_error)
+                if channel_prediction_error is not None: #BCS KDTree : think can remove this line i.e. if (was for failing NNSearches) # and np.isfinite(channel_prediction_error):
+                    prediction_errors.append(channel_prediction_error)
             except KeyError:
                 # channel_telemetry was missing needed attributes,
                 # so skip adding prediction errors
@@ -1226,6 +1227,12 @@ class EvidenceGraphLM(GraphLM):
 
         if prediction_errors:
             # Get the average prediction error over all channels for this step.
+
+            #BCS KDTree think can remove this if (was for failing NNSearches)
+            # print("prediction_errors type:", type(prediction_errors))
+            # print("prediction_errors length:", None if prediction_errors is None else len(prediction_errors))
+            # print("prediction_errors first10:", prediction_errors[:10] if prediction_errors is not None else None)
+
             mlh_prediction_error = np.mean(prediction_errors)
             self.buffer.update_stats(
                 {"mlh_prediction_error": mlh_prediction_error},
