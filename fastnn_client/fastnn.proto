@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+option csharp_namespace = "FastNn";
+
+package fastnn;
+
+service FastNnService {
+  rpc Create (CreateRequest) returns (CreateResponse);
+  rpc Destroy (DestroyRequest) returns (DestroyResponse);
+  rpc Query (QueryRequest) returns (QueryResponse);
+}
+
+message CreateRequest {
+  repeated float x = 1;
+  repeated float y = 2;
+  repeated float z = 3;
+}
+
+message CreateResponse {
+  string id = 1;
+}
+
+message DestroyRequest {
+  string id = 1;
+}
+
+message DestroyResponse {}
+
+message QueryRequest {
+  string id = 1;
+  repeated float x = 2;
+  repeated float y = 3;
+  repeated float z = 4;
+  int32 k = 5;
+}
+
+message QueryResponse {
+  repeated int32 indices = 1;
+  repeated float distances = 2;
+}
