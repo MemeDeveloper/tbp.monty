@@ -21,7 +21,7 @@ from tbp.monty.frameworks.utils.spatial_arithmetics import (
 logger = logging.getLogger(__name__)
 
 
-class NumpyGraph:
+class NumpyGraph: #BCS look at this... why was torch slow? 
     """Alternative way to represent graphs without using torch.
 
     Speeds up runtime significantly.
@@ -416,7 +416,7 @@ def circular_mean(values):
 def build_point_cloud_graph(locations, features, feature_mapping):
     """Build a graph from observations without edges.
 
-    Args:
+    Args: #BCS: not sure if this is the right way to represent this, are locations duplicated in locations and features? what is in feature_mapping?
         locations: array of x, y, z positions in space
         features: dictionary of features at locations
         feature_mapping: ?
