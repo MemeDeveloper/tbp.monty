@@ -14,7 +14,7 @@ import logging
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
-from sklearn.neighbors import KDTree
+from sklearn.neighbors import KDTree #BCS KDTree why not use sklearn's KDTree? It's faster than scipy's and we don't need the extra functionality of scipy's cKDTree. Also, scipy's KDTree is not thread safe, which can cause issues when using multiple LMs in parallel.
 
 from tbp.monty.frameworks.models.graph_matching import GraphLM, GraphMemory
 from tbp.monty.frameworks.utils.graph_matching_utils import (
@@ -176,7 +176,8 @@ class FeatureGraphLM(GraphLM):
                     else:
                         # k should not be > num_lms - 1
                         k = self.NUM_OTHER_LMS
-                    vote_location_tree = KDTree(
+                    print("#BCS FeatureGraphLM receive_votes: ", len(vote_data["pos_location_votes"][possible_obj]))                        
+                    vote_location_tree = KDTree( #BCS KDTree
                         vote_data["pos_location_votes"][possible_obj],
                         leaf_size=2,
                     )
@@ -186,6 +187,7 @@ class FeatureGraphLM(GraphLM):
                         list(enumerate(self.possible_paths[possible_obj]))
                     ):
                         location = path[-1]
+                        print("#BCS FeatureGraphLM receive_votes query: ", len([location]), " k: ", k)   
                         dists, _ = vote_location_tree.query([location], k=k)
                         # print(f"distances of nearest votes: {dists}")
                         # TODO: check pose vote as well.
@@ -464,6 +466,7 @@ class FeatureGraphLM(GraphLM):
             return [], []
 
         # create a new KDtree with only eligible nodes
+        print("#BCS FeatureGraphLM _get_new_possible_paths_and_poses reduced_tree: ", len(feature_matched_locs))  
         reduced_tree = KDTree(feature_matched_locs, leaf_size=2)
 
         for path_id, path in enumerate(self.possible_paths[graph_id]):
@@ -475,6 +478,8 @@ class FeatureGraphLM(GraphLM):
 
                 searching_near_nodes = True
                 num_loops = 0
+                # create a new KDtree with only eligible nodes
+                print("#BCS FeatureGraphLM _get_new_possible_paths_and_poses reduced_tree query: ", len([search_pos]), " k: ", len(feature_matched_node_ids))
                 closest_node_ds, closest_reduced_node_ids = reduced_tree.query(
                     [search_pos],
                     k=len(feature_matched_node_ids),

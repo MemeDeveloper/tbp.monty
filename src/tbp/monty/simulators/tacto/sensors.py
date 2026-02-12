@@ -28,7 +28,7 @@ __all__ = ["TactoSensor"]
 
 
 @dataclass(frozen=True)
-class TactoSensor(SensorConfig):
+class TactoSensor(SensorConfig):#BCS habitat_sim
     """Base class common for all tacto sensors.
 
     Each specific sensor implementation should inherit this class and pass the
