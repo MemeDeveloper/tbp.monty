@@ -9,6 +9,8 @@ import numpy as np
 from . import fastnn_pb2
 from . import fastnn_pb2_grpc
 
+from scipy.spatial import KDTree
+
 # (tbp.monty) slapd@LUCID:~/tbp$ code .
 # (tbp.monty) slapd@LUCID:~/tbp$ cat /etc/resolv.conf | grep nameserver
 # nameserver 10.255.255.254
@@ -67,6 +69,8 @@ class FastNn:
         self._id = None
         self._closed = False
 
+        self._local_kdtree = KDTree(source_points)  # for small queries, to avoid gRPC overhead
+
         self._connect_and_create()
 
     def _connect_and_create(self) -> None:
@@ -83,6 +87,7 @@ class FastNn:
 
         resp = self._stub.Create(fastnn_pb2.CreateRequest(**create_kwargs))
         self._id = resp.id
+        print(f"FastNn id: {self._id}")
 
     def query(self, search_locations: np.ndarray, k: int = 1) -> Tuple[np.ndarray, np.ndarray]:
         if self._closed:
@@ -92,6 +97,21 @@ class FastNn:
             self._connect_and_create()
         if k <= 0:
             raise ValueError(f"k must be >= 1; got {k}")
+
+        
+            
+
+        # DECISION # DECISION # DECISION # DECISION # DECISION 
+
+        local_limit = 600  # empirically, gRPC overhead dominates for small queries; this is a heuristic threshold  
+
+        if(len(search_locations) <= local_limit):
+            return self._local_kdtree.query(search_locations, k=k)
+
+
+
+
+
 
         qpts = _as_points_f32(search_locations, name="search_locations")
         q = qpts.shape[0]
@@ -116,6 +136,8 @@ class FastNn:
         if self._closed:
             return
 
+        print(f"FastNn id: {self._id} closing...")
+
         try:
             if self._stub is not None and self._id is not None:
                 self._stub.Destroy(fastnn_pb2.DestroyRequest(id=self._id))
@@ -123,6 +145,7 @@ class FastNn:
             if self._channel is not None:
                 self._channel.close()
             self._closed = True
+            
 
     # ---- Pickle support (KDTree-like) ----
 

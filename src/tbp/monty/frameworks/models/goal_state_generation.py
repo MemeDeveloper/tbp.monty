@@ -682,14 +682,15 @@ class EvidenceGoalStateGenerator(GraphGoalStateGenerator):
         second_mlh_graph = self.parent_lm.get_graph(
             second_id, input_channel=sensor_channel_name
         )
+        print("#BCS EvidenceGoalStateGenerator goal_state calls find_nearest_neighbors: k1, return_distance: ", len(top_mlh_graph))
         radius_node_dists = second_mlh_graph.find_nearest_neighbors(
             top_mlh_graph,
             num_neighbors=1,
             return_distance=True,
         )
 
-        target_loc_id = np.argmax(radius_node_dists)
-
+        target_loc_id = np.argmax(radius_node_dists) #BCS seems they want to find where to "look" next i.e. we get the largest nearest neighbor distance, which is the point on the most likely graph that is furthest from any point on the second most likely graph; this should be a good candidate for disambiguating between the two hypotheses
+        #BCS why the hell is a distance now called "target_loc_id"?
         self.prev_top_mlhs = [top_mlh, second_mlh_object]
 
         return target_loc_id

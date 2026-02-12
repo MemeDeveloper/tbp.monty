@@ -13,5 +13,15 @@ setup_env()
 
 from tbp.monty.frameworks.run import main  # noqa: E402
 
+
+
+from datetime import datetime
+print(f"#BCS FastNn gRPC now is {datetime.now()}")
+
+from time import perf_counter as pc
+t0 = pc()
+
 if __name__ == "__main__":
     main()
+
+print(f"#BCS FastNn gRPC Took: {pc() - t0} seconds, ending {datetime.now()}")

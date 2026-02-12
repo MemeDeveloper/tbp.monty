@@ -888,8 +888,8 @@ class EvidenceGraphLM(GraphLM):
         for n, vote in enumerate(state_votes):
             graph_location_vote[n] = vote.location
             vote_evidences[n] = vote.confidence
-
-        vote_location_tree = KDTree(
+        print("#BCS EvidenceGraphLM _update_evidence_with_vote: ", len(graph_location_vote))  
+        vote_location_tree = KDTree( #BCS KDTree
             graph_location_vote,
             leafsize=40,
         )
@@ -897,6 +897,7 @@ class EvidenceGraphLM(GraphLM):
         if graph_location_vote.shape[0] < vote_nn:
             vote_nn = graph_location_vote.shape[0]
         # Get max_nneighbors closest nodes and their distances
+        print("#BCS EvidenceGraphLM _update_evidence_with_vote query: ", len(self.possible_locations[graph_id]), " k :", vote_nn)
         (radius_node_dists, radius_node_ids) = vote_location_tree.query(
             self.possible_locations[graph_id],
             k=vote_nn,

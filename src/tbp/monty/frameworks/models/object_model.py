@@ -15,8 +15,9 @@ import numpy as np
 import torch
 import torch_geometric
 import torch_geometric.transforms as T
+# from scipy.spatial import KDTree
 from fastnn_client.fast_nn import FastNn #BCS KDTree
-from sklearn.neighbors import kneighbors_graph
+from sklearn.neighbors import kneighbors_graph #BCS KDTree CHECK this out too!!
 from torch_geometric.data import Data
 
 from tbp.monty.frameworks.models.abstract_monty_classes import ObjectModel
@@ -418,6 +419,10 @@ class GridObjectModel(GraphObjectModel):
         self._graph = new_graph
         # TODO: remove eventually and do search directly in grid?
         self._location_tree = FastNn(new_graph.pos) #BCS KDTree
+        # self._location_tree = KDTree(
+        #     new_graph.pos,
+        #     leafsize=40,
+        # )
 
     def find_nearest_neighbors(
         self,
@@ -443,6 +448,13 @@ class GridObjectModel(GraphObjectModel):
         (distances, nearest_node_ids) = self._location_tree.query( #BCS KDTree
             search_locations, 
             k=num_neighbors) 
+        # (distances, nearest_node_ids) = self._location_tree.query(
+        #     search_locations,
+        #     k=num_neighbors,
+        #     p=2,  # euclidean distance
+        #     workers=1,  # using more than 1 worker slows down run on lambda.
+        # )
+
         # else:
         #     # TODO: This is not done yet and doesn't work. It seems at the moment
         #     # That kd Tree search is still more efficient.
@@ -469,6 +481,10 @@ class GridObjectModel(GraphObjectModel):
             # Just use pretrained graph. Do not use grids to constrain nodes.
             self._graph = graph
             self._location_tree = FastNn(graph.pos) #BCS KDTree
+            # self._location_tree = KDTree(
+            #     graph.pos,
+            #     leafsize=40,
+            # )
         else:
             self._initialize_and_fill_grid(
                 locations=graph.pos,
@@ -673,6 +689,10 @@ class GridObjectModel(GraphObjectModel):
         )
         # TODO: remove eventually and do search directly in grid?
         self._location_tree = FastNn(graph.pos) #BCS KDTree
+        # self._location_tree = KDTree(
+        #     graph.pos,
+        #     leafsize=40,
+        # )
         return graph
 
     # ------------------------ Helper --------------------------
