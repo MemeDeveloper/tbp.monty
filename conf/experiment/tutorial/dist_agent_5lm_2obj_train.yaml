@@ -1,6 +1,6 @@
 defaults:
   - /experiment/config/supervised_pretraining@config
-  - /experiment/config/logging/pretrain@config.logging
+  - /experiment/config/logging/parallel_evidence_lm@config.logging
   - /experiment/config/monty/five_lm@config.monty_config
   - /experiment/config/monty/args/clear_monty_args@config.monty_config
   - /experiment/config/monty/args/defaults@config.monty_config.monty_args
