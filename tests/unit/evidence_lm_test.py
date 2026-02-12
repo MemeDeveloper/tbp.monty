@@ -1,4 +1,4 @@
-# Copyright 2025 Thousand Brains Project
+# Copyright 2025-2026 Thousand Brains Project
 # Copyright 2022-2024 Numenta Inc.
 #
 # Copyright may exist in Contributors' modifications
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from tbp.monty.frameworks.experiments.monty_experiment import ExperimentMode
+from tests import HYDRA_ROOT
 
 pytest.importorskip(
     "habitat_sim",
@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
+from tbp.monty.frameworks.experiments.mode import ExperimentMode
 from tbp.monty.frameworks.models.evidence_matching.learning_module import (
     EvidenceGraphLM,
 )
@@ -65,7 +66,7 @@ class EvidenceLMTest(BaseGraphTest):
                 "monty_config",
                 "motor_system_config",
                 "motor_system_args",
-                "policy_args",
+                "policy",
                 "file_name",
             ]
         )
@@ -88,7 +89,7 @@ class EvidenceLMTest(BaseGraphTest):
 
             return hydra.compose(config_name="test", overrides=overrides)
 
-        with hydra.initialize(version_base=None, config_path="../../conf"):
+        with hydra.initialize_config_dir(version_base=None, config_dir=str(HYDRA_ROOT)):
             self.evidence_cfg = hydra_config("evidence")
             self.fixed_actions_evidence_cfg = hydra_config(
                 "fixed_actions_evidence", self.fixed_actions_path
@@ -170,13 +171,10 @@ class EvidenceLMTest(BaseGraphTest):
         shutil.rmtree(self.output_dir)
 
     def get_elm_with_fake_object(
-        self,
-        fake_obs,
-        initial_possible_poses="informed",
-        gsg_class=None,
-        gsg_args=None,
+        self, fake_obs, initial_possible_poses="informed", gsg=None
     ):
         graph_lm = EvidenceGraphLM(
+            rng=np.random.RandomState(),
             max_match_distance=0.005,
             tolerances={
                 "patch": {
@@ -191,13 +189,12 @@ class EvidenceLMTest(BaseGraphTest):
             },
             # set graph size larger since fake obs displacements are meters
             max_graph_size=10,
-            gsg_class=gsg_class,
-            gsg_args=gsg_args,
+            gsg=gsg,
             hypotheses_updater_args=dict(
                 initial_possible_poses=initial_possible_poses,
             ),
         )
-        graph_lm.mode = "train"
+        graph_lm.mode = ExperimentMode.TRAIN
         for observation in fake_obs:
             graph_lm.exploratory_step([observation])
         graph_lm.detected_object = "new_object0"
@@ -225,7 +222,11 @@ class EvidenceLMTest(BaseGraphTest):
         return graph_lm
 
     def get_elm_with_two_fake_objects(
-        self, fake_obs, fake_obs_two, initial_possible_poses, gsg_class, gsg_args
+        self,
+        fake_obs,
+        fake_obs_two,
+        initial_possible_poses,
+        gsg,
     ) -> EvidenceGraphLM:
         """Train on two fake observation objects.
 
@@ -236,14 +237,13 @@ class EvidenceLMTest(BaseGraphTest):
         graph_lm = self.get_elm_with_fake_object(
             fake_obs,
             initial_possible_poses=initial_possible_poses,
-            gsg_class=gsg_class,
-            gsg_args=gsg_args,
+            gsg=gsg,
         )
 
         # Train on second object
         obj_two_target = copy.deepcopy(self.placeholder_target)
         obj_two_target["object"] = "new_object1"
-        graph_lm.pre_episode(primary_target=obj_two_target)
+        graph_lm.pre_episode(rng=np.random.RandomState(), primary_target=obj_two_target)
         for observation in fake_obs_two:
             graph_lm.exploratory_step([observation])
         graph_lm.detected_object = obj_two_target["object"]
@@ -316,7 +316,7 @@ class EvidenceLMTest(BaseGraphTest):
         exp = hydra.utils.instantiate(self.fixed_actions_evidence_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.pre_epoch()
             exp.env._env.remove_all_objects()
             with self.assertRaises(ValueError) as error:
@@ -462,7 +462,7 @@ class EvidenceLMTest(BaseGraphTest):
         exp = hydra.utils.instantiate(self.fixed_actions_evidence_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.pre_epoch()
             # Overwrite target with a false name to test confused logging.
             for e in range(4):
@@ -542,9 +542,11 @@ class EvidenceLMTest(BaseGraphTest):
         # Get LM with object learned from fake_obs
         graph_lm = self.get_elm_with_fake_object(self.fake_obs_symmetric)
 
-        graph_lm.mode = "eval"
+        graph_lm.mode = ExperimentMode.EVAL
         # Don't need to give target object since we are not logging performance
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         num_steps_checked_symmetry = 0
         for i in range(12):
             observation = fake_obs_test[i % 4]
@@ -594,9 +596,11 @@ class EvidenceLMTest(BaseGraphTest):
 
         graph_lm = self.get_elm_with_fake_object(self.fake_obs_learn)
 
-        graph_lm.mode = "eval"
+        graph_lm.mode = ExperimentMode.EVAL
         # Don't need to give target object since we are not logging performance
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         target_evidence = 1
         for observation in fake_obs_test:
             graph_lm.add_lm_processing_to_buffer_stats(lm_processed=True)
@@ -637,8 +641,10 @@ class EvidenceLMTest(BaseGraphTest):
 
         graph_lm = self.get_elm_with_fake_object(self.fake_obs_learn)
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         target_evidence = 1
         for observation in fake_obs_test:
             graph_lm.add_lm_processing_to_buffer_stats(lm_processed=True)
@@ -678,8 +684,10 @@ class EvidenceLMTest(BaseGraphTest):
 
         graph_lm = self.get_elm_with_fake_object(self.fake_obs_learn)
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         target_evidence = 1
         for observation in fake_obs_test:
             observation.location = observation.location + np.ones(3)
@@ -726,8 +734,10 @@ class EvidenceLMTest(BaseGraphTest):
 
         graph_lm = self.get_elm_with_fake_object(self.fake_obs_learn)
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for observation in fake_obs_test:
             graph_lm.add_lm_processing_to_buffer_stats(lm_processed=True)
             graph_lm.matching_step([observation])
@@ -760,8 +770,10 @@ class EvidenceLMTest(BaseGraphTest):
 
         graph_lm = self.get_elm_with_fake_object(self.fake_obs_learn)
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for i, observation in enumerate(fake_obs_test):
             graph_lm.add_lm_processing_to_buffer_stats(lm_processed=True)
             graph_lm.matching_step([observation])
@@ -784,8 +796,10 @@ class EvidenceLMTest(BaseGraphTest):
 
         graph_lm = self.get_elm_with_fake_object(self.fake_obs_learn)
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         graph_lm.add_lm_processing_to_buffer_stats(lm_processed=True)
         graph_lm.matching_step([fake_obs_test[0]])
 
@@ -805,8 +819,10 @@ class EvidenceLMTest(BaseGraphTest):
         self, graph_lm, fake_obs_test, target_object, focus_on_pose=False
     ):
         """Helper function for hypothesis testing that retreives a target location."""
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
 
         # Observe 4 / 5 of the available features
         for ii in range(4):
@@ -851,8 +867,7 @@ class EvidenceLMTest(BaseGraphTest):
             self.fake_obs_house,
             initial_possible_poses=[[0, 0, 0]],  # Note we isolate the influence of
             # ambiguous pose on the hypothesis testing
-            gsg_class=EvidenceGoalStateGenerator,
-            gsg_args=self.default_gsg_config,
+            gsg=EvidenceGoalStateGenerator(**self.default_gsg_config),
         )
 
         self._evaluate_target_location(
@@ -877,8 +892,7 @@ class EvidenceLMTest(BaseGraphTest):
             self.fake_obs_house,
             initial_possible_poses=[[45, 75, 190]],  # Note we isolate the influence of
             # ambiguous pose on the hypothesis testing
-            gsg_class=EvidenceGoalStateGenerator,
-            gsg_args=self.default_gsg_config,
+            gsg=EvidenceGoalStateGenerator(**self.default_gsg_config),
         )
 
         self._evaluate_target_location(
@@ -903,8 +917,7 @@ class EvidenceLMTest(BaseGraphTest):
             # Note pose *is* ambiguous in this unti test, vs. in proposal_for_id; in
             # particular, house can either be right-side up, or upside-down (rotated
             # about z)
-            gsg_class=EvidenceGoalStateGenerator,
-            gsg_args=self.default_gsg_config,
+            gsg=EvidenceGoalStateGenerator(**self.default_gsg_config),
         )
 
         self._evaluate_target_location(
@@ -932,8 +945,7 @@ class EvidenceLMTest(BaseGraphTest):
             # Note pose *is* ambiguous in this unti test, vs. in proposal_for_id; in
             # particular, house can either be right-side up, or upside-down (was rotated
             # about z before the additional complex transformation was applied)
-            gsg_class=EvidenceGoalStateGenerator,
-            gsg_args=self.default_gsg_config,
+            gsg=EvidenceGoalStateGenerator(**self.default_gsg_config),
         )
 
         self._evaluate_target_location(
@@ -961,8 +973,10 @@ class EvidenceLMTest(BaseGraphTest):
 
         graph_lm = self.get_elm_with_fake_object(self.fake_obs_learn)
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         # We start at evidence 0 since we don't get feature evidence at initialization
         for target_evidence, observation in enumerate(fake_obs_test):
             graph_lm.add_lm_processing_to_buffer_stats(lm_processed=True)
@@ -994,8 +1008,10 @@ class EvidenceLMTest(BaseGraphTest):
 
         graph_lm = self.get_elm_with_fake_object(self.fake_obs_learn)
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for step, observation in enumerate(fake_obs_test):
             graph_lm.add_lm_processing_to_buffer_stats(lm_processed=True)
             graph_lm.matching_step([observation])
@@ -1054,8 +1070,10 @@ class EvidenceLMTest(BaseGraphTest):
 
         graph_lm = self.get_elm_with_fake_object(self.fake_obs_learn)
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         target_evidence = 1
         for step, observation in enumerate(fake_obs_test):
             if not observation.use_state:
@@ -1122,7 +1140,7 @@ class EvidenceLMTest(BaseGraphTest):
             # as normal and create a follow-up experiment for second evaluation.
             exp.experiment_mode = ExperimentMode.EVAL
             exp.logger_handler.pre_eval(exp.logger_args)
-            exp.model.set_experiment_mode("eval")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             for _ in range(exp.n_eval_epochs):
                 exp.run_epoch()
             exp.logger_handler.post_eval(exp.logger_args)
@@ -1224,7 +1242,7 @@ class EvidenceLMTest(BaseGraphTest):
         exp = hydra.utils.instantiate(self.five_lm_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.pre_epoch()
             exp.env._env.remove_all_objects()
             with self.assertRaises(ValueError) as error:

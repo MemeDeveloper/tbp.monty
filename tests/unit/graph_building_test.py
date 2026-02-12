@@ -1,4 +1,4 @@
-# Copyright 2025 Thousand Brains Project
+# Copyright 2025-2026 Thousand Brains Project
 # Copyright 2022-2024 Numenta Inc.
 #
 # Copyright may exist in Contributors' modifications
@@ -15,6 +15,8 @@ import hydra
 import pytest
 from omegaconf import DictConfig
 
+from tests import HYDRA_ROOT
+
 pytest.importorskip(
     "habitat_sim",
     reason="Habitat Sim optional dependency not installed.",
@@ -25,7 +27,7 @@ import shutil
 import tempfile
 import unittest
 
-from tbp.monty.frameworks.experiments import (
+from tbp.monty.frameworks.experiments.pretraining_experiments import (
     MontySupervisedObjectPretrainingExperiment,
 )
 from tbp.monty.frameworks.utils.graph_matching_utils import get_correct_k_n
@@ -59,7 +61,7 @@ class GraphBuildingTest(unittest.TestCase):
                 ],
             )
 
-        with hydra.initialize(version_base=None, config_path="../../conf"):
+        with hydra.initialize_config_dir(version_base=None, config_dir=str(HYDRA_ROOT)):
             self.supervised_pre_training_cfg = training_config(
                 "supervised_pre_training"
             )

@@ -1,4 +1,4 @@
-# Copyright 2025 Thousand Brains Project
+# Copyright 2025-2026 Thousand Brains Project
 # Copyright 2022-2024 Numenta Inc.
 #
 # Copyright may exist in Contributors' modifications
@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from tbp.monty.frameworks.experiments.monty_experiment import ExperimentMode
+from tbp.monty.context import RuntimeContext
+from tests import HYDRA_ROOT
 
 pytest.importorskip(
     "habitat_sim",
     reason="Habitat Sim optional dependency not installed.",
 )
-
 import copy
 import shutil
 import tempfile
@@ -31,15 +31,10 @@ import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
-from tbp.monty.frameworks.loggers.wandb_handlers import DetailedWandbMarkedObsHandler
+from tbp.monty.frameworks.experiments.mode import ExperimentMode
 from tbp.monty.frameworks.models.feature_location_matching import FeatureGraphLM
 from tbp.monty.frameworks.models.graph_matching import GraphLM
-from tbp.monty.frameworks.utils.follow_up_configs import (
-    create_eval_episode_hydra_cfg,
-    create_eval_multiple_episodes_hydra_cfg,
-)
 from tbp.monty.frameworks.utils.logging_utils import (
-    deserialize_json_chunks,
     load_stats,
 )
 from tests.unit.resources.unit_test_utils import BaseGraphTest
@@ -69,12 +64,12 @@ class TrainedGraphLM:
     episodes: list[EpisodeObservations]
 
     @property
-    def mode(self) -> str:
+    def mode(self) -> ExperimentMode | None:
         """Helper property to make setting and reading the LM mode easier."""
         return self.learning_module.mode
 
     @mode.setter
-    def mode(self, mode: str):
+    def mode(self, mode: ExperimentMode | None):
         self.learning_module.mode = mode
 
     def num_observations(self, episode_num: int) -> int:
@@ -90,9 +85,9 @@ class TrainedGraphLM:
         """Number of episodes/objects this LM was trained on."""
         return len(self.episodes)
 
-    def pre_episode(self, primary_target):
+    def pre_episode(self, rng: np.random.RandomState, primary_target) -> None:
         """Delegates pre_episode calls to the LM."""
-        self.learning_module.pre_episode(primary_target)
+        self.learning_module.pre_episode(rng, primary_target)
 
 
 class GraphLearningTest(BaseGraphTest):
@@ -118,7 +113,7 @@ class GraphLearningTest(BaseGraphTest):
                 "monty_config",
                 "motor_system_config",
                 "motor_system_args",
-                "policy_args",
+                "policy",
                 "file_name",
             ]
         )
@@ -145,7 +140,7 @@ class GraphLearningTest(BaseGraphTest):
                 overrides += extra_overrides
             return hydra.compose(config_name="test", overrides=overrides)
 
-        with hydra.initialize(version_base=None, config_path="../../conf"):
+        with hydra.initialize_config_dir(version_base=None, config_dir=str(HYDRA_ROOT)):
             self.base_cfg = hydra_config("base")
             self.surface_agent_eval_cfg = hydra_config("surface_agent_eval")
             self.ppf_pred_cfg = hydra_config("ppf_pred")
@@ -197,7 +192,7 @@ class GraphLearningTest(BaseGraphTest):
         exp = hydra.utils.instantiate(self.base_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.pre_epoch()
             exp.run_episode()
 
@@ -205,11 +200,14 @@ class GraphLearningTest(BaseGraphTest):
         exp = hydra.utils.instantiate(self.base_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.pre_epoch()
             exp.pre_episode()
-            for step, observation in enumerate(exp.env_interface):
-                exp.model.step(observation)
+            step = 0
+            ctx = RuntimeContext(rng=exp.rng)
+            while True:
+                observations = exp.env_interface.step(ctx, first=(step == 0))
+                exp.model.step(observations)
                 self.assertEqual(
                     step + 1,
                     len(exp.model.learning_modules[0].buffer),
@@ -251,11 +249,13 @@ class GraphLearningTest(BaseGraphTest):
                 if step == 3:
                     break
 
+                step += 1
+
     def test_can_run_eval_episode(self):
         exp = hydra.utils.instantiate(self.base_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.EVAL
-            exp.model.set_experiment_mode("eval")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.pre_epoch()
             exp.run_episode()
 
@@ -263,7 +263,7 @@ class GraphLearningTest(BaseGraphTest):
         exp = hydra.utils.instantiate(self.surface_agent_eval_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.EVAL
-            exp.model.set_experiment_mode("eval")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.pre_epoch()
             exp.run_episode()
 
@@ -336,262 +336,6 @@ class GraphLearningTest(BaseGraphTest):
         eval_stats = pd.read_csv(output_dir / "eval_stats.csv")
         self.check_eval_results(eval_stats)
 
-    def test_reproduce_single_episode(self):
-        exp = hydra.utils.instantiate(self.fixed_actions_feat_cfg.test)
-        with exp:
-            exp.train()
-
-        # Create a separate experiment for evaluation to mimic the us case of re-running
-        # eval episodes from a pretrained model
-        eval_cfg_1 = copy.deepcopy(self.fixed_actions_feat_cfg)
-        eval_cfg_1.test.config.model_name_or_path = str(Path(self.output_dir) / "2")
-        # update so it only runs one episode
-        eval_cfg_1.test.config.n_eval_epochs = 1
-        eval_exp_1 = hydra.utils.instantiate(eval_cfg_1.test)
-        with eval_exp_1:
-            # TODO: update so it only runs one episode
-            eval_exp_1.evaluate()
-
-        # Create detailed follow-up experiment
-        eval_cfg_2 = create_eval_episode_hydra_cfg(parent_config=eval_cfg_1, episode=0)
-
-        ###
-        # Check that the arguments for the new experiment are correct
-        ###
-
-        # Detailed wandb logging should be automatically built in, though we will remove
-        # it to avoid logging tests to wandb
-        self.assertEqual(
-            eval_cfg_2.test.config.logging.wandb_handlers[-1],
-            DetailedWandbMarkedObsHandler,
-        )
-        eval_cfg_2.test.config.logging.wandb_handlers = []
-
-        # check that the object being used is the same one from original exp
-        self.assertEqual(
-            eval_cfg_1.test.config.eval_env_interface_args.object_names,
-            eval_cfg_2.test.config.eval_env_interface_args.object_names,
-        )
-
-        # If we made it this far, we have the correct parameters. Now run the experiment
-        eval_exp_2 = hydra.utils.instantiate(eval_cfg_2.test)
-        with eval_exp_2:
-            eval_exp_2.evaluate()
-
-        ###
-        # Check that basic csv stats are the same
-        ###
-        original_eval_stats_file = eval_exp_1.output_dir / "eval_stats.csv"
-        new_eval_stats_file = (
-            eval_exp_1.output_dir / "eval_episode_0_rerun" / "eval_stats.csv"
-        )
-
-        original_stats = pd.read_csv(original_eval_stats_file)
-        new_stats = pd.read_csv(new_eval_stats_file)
-        # filter the time column, as both experiments took place at different times
-        original_stats = original_stats.drop(columns=["time"])
-        new_stats = new_stats.drop(columns=["time"])
-        # Get only first episode; eval_exp_1 ran for 3 epochs
-        self.assertTrue(original_stats.loc[0].equals(new_stats.loc[0]))
-
-        ###
-        # Just a few simple lines to check that the json logs are correct
-        ###
-
-        # TODO: Once json file i/o code has been updated, only load single episode
-        original_json_file = eval_exp_1.output_dir / "detailed_run_stats.json"
-        new_json_file = (
-            eval_exp_1.output_dir / "eval_episode_0_rerun" / "detailed_run_stats.json"
-        )
-
-        original_detailed_stats = deserialize_json_chunks(original_json_file)
-        new_detailed_stats = deserialize_json_chunks(new_json_file)
-
-        # Check that LM data is the same; absolute nightmare zoo of data formats
-        og_lm_stats = original_detailed_stats["0"]["LM_0"]
-        new_lm_stats = new_detailed_stats["0"]["LM_0"]
-
-        self.compare_lm_stats(og_lm_stats, new_lm_stats)
-
-        # Check that targets are the same
-        og_lm_targets = original_detailed_stats["0"]["target"]
-        new_lm_targets = new_detailed_stats["0"]["target"]
-        for key, val in og_lm_targets.items():
-            self.assertEqual(val, new_lm_targets[key])
-
-        self.compare_sensor_module_logs(original_detailed_stats, new_detailed_stats)
-
-    def test_reproduce_multiple_episodes(self):
-        exp = hydra.utils.instantiate(self.fixed_actions_feat_cfg.test)
-        with exp:
-            exp.train()
-
-        # Create a separate experiment for evaluation to mimic the us case of re-running
-        # eval episodes from a pretrained model
-        eval_cfg_1 = copy.deepcopy(self.fixed_actions_feat_cfg)
-        eval_cfg_1.test.config.model_name_or_path = str(Path(exp.output_dir) / "2")
-
-        eval_exp_1 = hydra.utils.instantiate(eval_cfg_1.test)
-        with eval_exp_1:
-            eval_exp_1.evaluate()
-
-        # Create detailed follow-up experiment
-        eval_cfg_2 = create_eval_multiple_episodes_hydra_cfg(
-            parent_config=eval_cfg_1,
-            episodes=[0, 1, 2],
-        )
-
-        ###
-        # Check that the arguments for the new experiment are correct
-        ###
-
-        # NOTE: detailed wandb logging is currently removed as default. If the handler
-        # is added back, the handler should be removed in unit tests again. (also in the
-        # test_reproduce_single_episode_with_multiple_episode_function). For original
-        # code see https://github.com/thousandbrainsproject/tbp.monty/pull/208
-
-        # capsule3DSolid is used as the lone eval object; make sure it is listed once
-        # per episode
-        self.assertEqual(
-            eval_cfg_2.test.config.eval_env_interface_args.object_names,
-            ["capsule3DSolid", "capsule3DSolid", "capsule3DSolid"],
-        )
-
-        # Original sampler had just first two rotations, should cycle back to the first
-        # on the third episode
-        self.assertEqual(
-            eval_cfg_2.test.config.eval_env_interface_args.object_init_sampler.rotations,
-            [[0.0, 0.0, 0.0], [45.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-        )
-
-        # If we made it this far, we have the correct parameters. Now run the experiment
-        eval_exp_2 = hydra.utils.instantiate(eval_cfg_2.test)
-        with eval_exp_2:
-            eval_exp_2.evaluate()
-
-        ###
-        # Check that basic csv stats are the same
-        ###
-        original_eval_stats_file = eval_exp_1.output_dir / "eval_stats.csv"
-        new_eval_stats_file = (
-            eval_exp_1.output_dir / "eval_rerun_episodes" / "eval_stats.csv"
-        )
-
-        original_stats = pd.read_csv(original_eval_stats_file)
-        new_stats = pd.read_csv(new_eval_stats_file)
-        # filter the time column, as both experiments took place at different times
-        original_stats = original_stats.drop(columns=["time"])
-        new_stats = new_stats.drop(columns=["time"])
-        # Get only first episode; eval_exp_1 ran for 3 epochs
-        self.assertTrue(original_stats.equals(new_stats))
-
-        ###
-        # Just a few simple lines to check that the json logs are correct
-        ###
-
-        # TODO: Once json file i/o code has been updated, only load single episode
-        original_json_file = eval_exp_1.output_dir / "detailed_run_stats.json"
-        new_json_file = (
-            eval_exp_1.output_dir / "eval_rerun_episodes" / "detailed_run_stats.json"
-        )
-
-        original_detailed_stats = deserialize_json_chunks(original_json_file)
-        new_detailed_stats = deserialize_json_chunks(new_json_file)
-
-        # Check that LM data is the same; absolute nightmare zoo of data formats
-        og_lm_stats = original_detailed_stats["0"]["LM_0"]
-        new_lm_stats = new_detailed_stats["0"]["LM_0"]
-
-        self.compare_lm_stats(og_lm_stats, new_lm_stats)
-
-        # Check that targets are the same
-        og_lm_targets = original_detailed_stats["0"]["target"]
-        new_lm_targets = new_detailed_stats["0"]["target"]
-        for key, val in og_lm_targets.items():
-            self.assertEqual(val, new_lm_targets[key])
-
-        self.compare_sensor_module_logs(original_detailed_stats, new_detailed_stats)
-
-    def test_reproduce_single_episode_with_multiple_episode_function(self):
-        """Verify create_eval_config_multiple_episodes for a single episode."""
-        exp = hydra.utils.instantiate(self.fixed_actions_feat_cfg.test)
-        with exp:
-            exp.train()
-
-        # Create a separate experiment for evaluation to mimic the us case of re-running
-        # eval episodes from a pretrained model
-        eval_cfg_1 = copy.deepcopy(self.fixed_actions_feat_cfg)
-        eval_cfg_1.test.config.model_name_or_path = str(
-            Path(exp.output_dir) / "2",  # latest checkpoint
-        )
-
-        eval_exp_1 = hydra.utils.instantiate(eval_cfg_1.test)
-        with eval_exp_1:
-            eval_exp_1.evaluate()
-
-        # Create detailed follow-up experiment
-        eval_cfg_2 = create_eval_multiple_episodes_hydra_cfg(
-            parent_config=eval_cfg_1, episodes=[0]
-        )
-
-        ###
-        # Check that the arguments for the new experiment are correct
-        ###
-
-        # check that the object being used is the same one from original exp
-        self.assertEqual(
-            eval_cfg_1.test.config.eval_env_interface_args.object_names,
-            eval_cfg_2.test.config.eval_env_interface_args.object_names,
-        )
-
-        # If we made it this far, we have the correct parameters. Now run the experiment
-        eval_exp_2 = hydra.utils.instantiate(eval_cfg_2.test)
-        with eval_exp_2:
-            eval_exp_2.evaluate()
-
-        ###
-        # Check that basic csv stats are the same
-        ###
-        original_eval_stats_file = eval_exp_1.output_dir / "eval_stats.csv"
-        new_eval_stats_file = (
-            eval_exp_1.output_dir / "eval_rerun_episodes" / "eval_stats.csv"
-        )
-
-        original_stats = pd.read_csv(original_eval_stats_file)
-        new_stats = pd.read_csv(new_eval_stats_file)
-        # filter the time column, as both experiments took place at different times
-        original_stats = original_stats.drop(columns=["time"])
-        new_stats = new_stats.drop(columns=["time"])
-        # Get only first episode; eval_exp_1 ran for 3 epochs
-        self.assertTrue(original_stats.loc[0].equals(new_stats.loc[0]))
-
-        ###
-        # Just a few simple lines to check that the json logs are correct
-        ###
-
-        # TODO: Once json file i/o code has been updated, only load single episode
-        original_json_file = eval_exp_1.output_dir / "detailed_run_stats.json"
-        new_json_file = (
-            eval_exp_1.output_dir / "eval_rerun_episodes" / "detailed_run_stats.json"
-        )
-
-        original_detailed_stats = deserialize_json_chunks(original_json_file)
-        new_detailed_stats = deserialize_json_chunks(new_json_file)
-
-        # Check that LM data is the same; absolute nightmare zoo of data formats
-        og_lm_stats = original_detailed_stats["0"]["LM_0"]
-        new_lm_stats = new_detailed_stats["0"]["LM_0"]
-
-        self.compare_lm_stats(og_lm_stats, new_lm_stats)
-
-        # Check that targets are the same
-        og_lm_targets = original_detailed_stats["0"]["target"]
-        new_lm_targets = new_detailed_stats["0"]["target"]
-        for key, val in og_lm_targets.items():
-            self.assertEqual(val, new_lm_targets[key])
-
-        self.compare_sensor_module_logs(original_detailed_stats, new_detailed_stats)
-
     def test_save_and_load(self):
         # Move this to graph_building_test.py?
         exp = hydra.utils.instantiate(self.fixed_actions_ppf_cfg.test)
@@ -613,8 +357,8 @@ class GraphLearningTest(BaseGraphTest):
             ].graph_memory.get_all_models_in_memory()
 
             # Loop over each graph model and check they have the exact same data
-            for obj_name in graph_memory_1.keys():
-                for input_channel in graph_memory_1[obj_name].keys():
+            for obj_name in graph_memory_1:
+                for input_channel in graph_memory_1[obj_name]:
                     graph_1 = graph_memory_1[obj_name][input_channel]
                     graph_2 = graph_memory_2[obj_name][input_channel]
                     self.check_graphs_equal(graph_1, graph_2)
@@ -632,7 +376,7 @@ class GraphLearningTest(BaseGraphTest):
         exp = hydra.utils.instantiate(self.feature_pred_time_out_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             for e in range(6):
                 if e % 2 == 0:
                     exp.pre_epoch()
@@ -693,7 +437,7 @@ class GraphLearningTest(BaseGraphTest):
         exp = hydra.utils.instantiate(self.fixed_actions_feat_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.pre_epoch()
             # Overwrite target with a false name to test confused logging.
             for e in range(4):
@@ -808,7 +552,7 @@ class GraphLearningTest(BaseGraphTest):
             load_eval=True,
             load_detailed=True,
         )
-        for episode in lm_models.keys():
+        for episode in lm_models:
             self.assertEqual(
                 list(lm_models[episode]["LM_0"].keys()),
                 ["new_object0"],
@@ -866,8 +610,10 @@ class GraphLearningTest(BaseGraphTest):
         if offset is None:
             offset = np.zeros(3)
 
-        graph_lm.mode = "train"
-        graph_lm.pre_episode(self.placeholder_target)
+        graph_lm.mode = ExperimentMode.TRAIN
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
 
         offset_obs = []
         for observation in observations:
@@ -887,6 +633,7 @@ class GraphLearningTest(BaseGraphTest):
 
     def get_gm_with_fake_object(self):
         graph_lm = FeatureGraphLM(
+            rng=np.random.RandomState(),
             max_match_distance=0.005,
             tolerances={
                 "patch": {
@@ -916,6 +663,7 @@ class GraphLearningTest(BaseGraphTest):
         graph_lms = []
         for lm in range(5):
             graph_lm = FeatureGraphLM(
+                rng=np.random.RandomState(),
                 max_match_distance=0.005,
                 tolerances={
                     "patch": {
@@ -944,9 +692,11 @@ class GraphLearningTest(BaseGraphTest):
 
         graph_lm = self.get_gm_with_fake_object()
 
-        graph_lm.mode = "eval"
+        graph_lm.mode = ExperimentMode.EVAL
         # Don't need to give target object since we are not logging performance
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for observation in fake_obs_test:
             graph_lm.matching_step([observation])
             self.assertEqual(
@@ -982,8 +732,10 @@ class GraphLearningTest(BaseGraphTest):
 
         graph_lm = self.get_gm_with_fake_object()
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for observation in fake_obs_test:
             graph_lm.matching_step([observation])
             print(graph_lm.get_possible_matches())
@@ -1019,8 +771,10 @@ class GraphLearningTest(BaseGraphTest):
 
         graph_lm = self.get_gm_with_fake_object()
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for observation in fake_obs_test:
             observation.location = observation.location + np.ones(3)
             graph_lm.matching_step([observation])
@@ -1062,8 +816,10 @@ class GraphLearningTest(BaseGraphTest):
 
         graph_lm = self.get_gm_with_fake_object()
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for observation in fake_obs_test:
             graph_lm.matching_step([observation])
             self.assertEqual(
@@ -1099,8 +855,10 @@ class GraphLearningTest(BaseGraphTest):
 
         graph_lm = self.get_gm_with_fake_object()
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for i, observation in enumerate(fake_obs_test):
             graph_lm.matching_step([observation])
             if i == 0:
@@ -1123,8 +881,10 @@ class GraphLearningTest(BaseGraphTest):
 
         graph_lm = self.get_gm_with_fake_object()
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for observation in fake_obs_test:
             graph_lm.matching_step([observation])
             self.assertEqual(
@@ -1142,8 +902,10 @@ class GraphLearningTest(BaseGraphTest):
 
         graph_lm = self.get_gm_with_fake_object()
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for step, observation in enumerate(fake_obs_test):
             graph_lm.matching_step([observation])
             if step == 0:
@@ -1172,8 +934,10 @@ class GraphLearningTest(BaseGraphTest):
 
         graph_lm = self.get_gm_with_fake_object()
 
-        graph_lm.mode = "eval"
-        graph_lm.pre_episode(primary_target=self.placeholder_target)
+        graph_lm.mode = ExperimentMode.EVAL
+        graph_lm.pre_episode(
+            rng=np.random.RandomState(), primary_target=self.placeholder_target
+        )
         for observation in fake_obs_test:
             if not observation.use_state:
                 pass
@@ -1228,11 +992,11 @@ class GraphLearningTest(BaseGraphTest):
             trained_modules = self.get_5lm_gm_with_fake_objects(objects)
             exp.experiment_mode = ExperimentMode.EVAL
             monty = exp.model
-            monty.set_experiment_mode("eval")
+            monty.set_experiment_mode(exp.experiment_mode)
             monty.learning_modules = [tm.learning_module for tm in trained_modules]
 
             for tm in trained_modules:
-                tm.mode = "eval"
+                tm.mode = ExperimentMode.EVAL
 
             exp.pre_epoch()
             for episode_num in range(tm.num_episodes):
@@ -1241,7 +1005,7 @@ class GraphLearningTest(BaseGraphTest):
                 # `pre_episode` method, but it expects to feed data from an environment
                 # interface to the model, and we aren't using that, so we call it again
                 # with the correct target value.
-                monty.pre_episode(self.placeholder_target)
+                monty.pre_episode(exp.rng, self.placeholder_target)
                 for step in range(tm.num_observations(episode_num)):
                     # Manually run through the internal Monty steps since we aren't
                     # using the data from the environment interface and are instead

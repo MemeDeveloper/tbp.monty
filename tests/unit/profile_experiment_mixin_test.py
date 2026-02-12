@@ -1,4 +1,4 @@
-# Copyright 2025 Thousand Brains Project
+# Copyright 2025-2026 Thousand Brains Project
 #
 # Copyright may exist in Contributors' modifications
 # and/or contributions to the work.
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from tbp.monty.frameworks.experiments.monty_experiment import ExperimentMode
+from tests import HYDRA_ROOT
 
 pytest.importorskip(
     "habitat_sim",
@@ -24,7 +24,11 @@ from unittest import TestCase
 
 import hydra
 
-from tbp.monty.frameworks.experiments import MontyExperiment, ProfileExperimentMixin
+from tbp.monty.frameworks.experiments.mode import ExperimentMode
+from tbp.monty.frameworks.experiments.monty_experiment import MontyExperiment
+from tbp.monty.frameworks.experiments.profile import (
+    ProfileExperimentMixin,
+)
 
 
 class InheritanceProfileExperimentMixinTest(TestCase):
@@ -64,7 +68,7 @@ class ProfileExperimentMixinTest(TestCase):
     def setUp(self):
         self.output_dir = tempfile.mkdtemp()
 
-        with hydra.initialize(version_base=None, config_path="../../conf"):
+        with hydra.initialize_config_dir(version_base=None, config_dir=str(HYDRA_ROOT)):
             self.base_cfg = hydra.compose(
                 config_name="test",
                 overrides=[
@@ -106,7 +110,7 @@ class ProfileExperimentMixinTest(TestCase):
         exp = hydra.utils.instantiate(self.base_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.env_interface = exp.train_env_interface
             exp.run_episode()
 
@@ -123,7 +127,7 @@ class ProfileExperimentMixinTest(TestCase):
         exp = hydra.utils.instantiate(self.base_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.run_epoch()
 
         self.assertSetEqual(
@@ -141,7 +145,7 @@ class ProfileExperimentMixinTest(TestCase):
         exp = hydra.utils.instantiate(self.base_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.EVAL
-            exp.model.set_experiment_mode("eval")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.run_epoch()
 
         self.assertSetEqual(

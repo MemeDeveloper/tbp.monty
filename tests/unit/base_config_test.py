@@ -1,4 +1,4 @@
-# Copyright 2025 Thousand Brains Project
+# Copyright 2025-2026 Thousand Brains Project
 # Copyright 2022-2024 Numenta Inc.
 #
 # Copyright may exist in Contributors' modifications
@@ -10,7 +10,8 @@
 
 import pytest
 
-from tbp.monty.frameworks.experiments.monty_experiment import ExperimentMode
+from tbp.monty.context import RuntimeContext
+from tests import HYDRA_ROOT
 
 pytest.importorskip(
     "habitat_sim",
@@ -26,13 +27,15 @@ from typing import Mapping
 import hydra
 from omegaconf import OmegaConf
 
+from tbp.monty.frameworks.experiments.mode import ExperimentMode
+
 
 class BaseConfigTest(unittest.TestCase):
     def setUp(self):
         """Code that gets executed before every test."""
         self.output_dir = tempfile.mkdtemp()
 
-        with hydra.initialize(version_base=None, config_path="../../conf"):
+        with hydra.initialize_config_dir(version_base=None, config_dir=str(HYDRA_ROOT)):
             self.base_cfg = hydra.compose(
                 config_name="test",
                 overrides=[
@@ -60,7 +63,7 @@ class BaseConfigTest(unittest.TestCase):
         exp = hydra.utils.instantiate(self.base_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.env_interface = exp.train_env_interface
             exp.run_episode()
 
@@ -69,7 +72,7 @@ class BaseConfigTest(unittest.TestCase):
         exp = hydra.utils.instantiate(self.base_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.TRAIN
-            exp.model.set_experiment_mode("train")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.run_epoch()
 
     # @unittest.skip("debugging")
@@ -77,7 +80,7 @@ class BaseConfigTest(unittest.TestCase):
         exp = hydra.utils.instantiate(self.base_cfg.test)
         with exp:
             exp.experiment_mode = ExperimentMode.EVAL
-            exp.model.set_experiment_mode("eval")
+            exp.model.set_experiment_mode(exp.experiment_mode)
             exp.run_epoch()
 
     # @unittest.skip("debugging")
@@ -89,11 +92,14 @@ class BaseConfigTest(unittest.TestCase):
 
             # Handle the training loop manually for this interim test
             max_count = 5
-            for count, observation in enumerate(exp.train_env_interface):
-                agent_keys = set(observation.keys())
+            count = 0
+            ctx = RuntimeContext(rng=exp.rng)
+            while True:
+                observations = exp.train_env_interface.step(ctx)
+                agent_keys = set(observations.keys())
                 sensor_keys = []
                 for agent in agent_keys:
-                    sensor_keys.extend(list(observation[agent].keys()))
+                    sensor_keys.extend(list(observations[agent].keys()))
 
                 sensor_key_set = set(sensor_keys)
                 self.assertCountEqual(
@@ -103,9 +109,11 @@ class BaseConfigTest(unittest.TestCase):
                 if count >= max_count:
                     break
 
+                count += 1
+
             # Verify we can skip the loop and just run a single
             for s in exp.model.sensor_modules:
-                s_obs = exp.model.get_observations(observation, s.sensor_module_id)
+                s_obs = exp.model.get_observations(observations, s.sensor_module_id)
                 feature = s.step(s_obs)
                 self.assertIn(
                     "rgba",
@@ -204,7 +212,7 @@ class DetailedEvidenceLmLoggingConfigTest(unittest.TestCase):
     def setUp(self):
         self.output_dir = tempfile.mkdtemp()
 
-        with hydra.initialize(version_base=None, config_path="../../conf"):
+        with hydra.initialize_config_dir(version_base=None, config_dir=str(HYDRA_ROOT)):
             self.cfg = hydra.compose(
                 config_name="test",
                 overrides=[
@@ -235,7 +243,7 @@ class DetailedEvidenceLmLoggingConfigTest(unittest.TestCase):
         """
         exp = hydra.utils.instantiate(self.cfg.test)
         with exp:
-            exp.model.set_experiment_mode("eval")
+            exp.model.set_experiment_mode(ExperimentMode.EVAL)
             exp.run_epoch()
 
         # Detailed logging handler should create a detailed_run_stats.json file
